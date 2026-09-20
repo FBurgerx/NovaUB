@@ -1,0 +1,40 @@
+# Сессии Telegram — НИКОГДА не пушить
+*.session
+*.session-journal
+*.session.bak
+nova-*.session
+forelka-*.session
+temp*.session
+inline_bot_session.session
+
+# Базы данных (могут содержать токены/настройки модулей)
+*.db
+*.db-wal
+*.db-shm
+*.db.bak
+novaub.db
+forelka.db
+forelka_config.db
+
+# Конфиги аккаунтов (api_id/api_hash, токены, owners)
+config-*.json
+telegram_api-*.json
+kernel_config-*.json
+module_config-*.json
+
+# Логи
+*.log
+
+# PID
+*.pid
+
+# Бэкапы и кэш
+backups/
+__pycache__/
+*.pyc
+*.pyo
+
+# Прочее
+*.zip
+repos.json
+assets/avatar_inline.jpg
