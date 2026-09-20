@@ -32,6 +32,10 @@ import time
 
 logger = logging.getLogger("NovaUBConfig")
 
+# Корень проекта: ядро лежит в core/, но все данные (конфиги, БД, логи,
+# сессии) должны жить в корне, а не migrate вместе с кодом.
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 CONFIG_FILE = "config-{user_id}.json"
 LEGACY_KERNEL_FILE = "kernel_config-{user_id}.json"
 LEGACY_API_FILE = "telegram_api-{user_id}.json"
@@ -71,7 +75,7 @@ _cache: dict[int, tuple[float, "Config"]] = {}
 
 
 def _config_path(user_id) -> str:
-    return CONFIG_FILE.format(user_id=user_id)
+    return os.path.join(PROJECT_ROOT, CONFIG_FILE.format(user_id=user_id))
 
 
 def _read_json(path: str) -> dict:
@@ -106,7 +110,10 @@ def _migrate_legacy(user_id) -> None:
     api = cfg.get("api") or {}
     changed = False
 
-    for legacy in (LEGACY_API_FILE.format(user_id=user_id), LEGACY_KERNEL_FILE.format(user_id=user_id)):
+    for legacy in (
+        os.path.join(PROJECT_ROOT, LEGACY_API_FILE.format(user_id=user_id)),
+        os.path.join(PROJECT_ROOT, LEGACY_KERNEL_FILE.format(user_id=user_id)),
+    ):
         if not os.path.exists(legacy):
             continue
         legacy_data = _read_json(legacy)

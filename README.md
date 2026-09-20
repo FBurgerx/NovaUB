@@ -179,7 +179,7 @@ pip list | grep -E "telethon|aiosqlite|flask"
 ### Запуск бота
 
 ```bash
-python main.py
+python novaub.py
 ```
 
 ### Первый запуск
@@ -511,7 +511,7 @@ NovaUB включает интерактивную CLI-панель для уп�
 ### Запуск CLI
 
 ```bash
-python cli.py
+python cli/cli.py
 ```
 
 ### Меню CLI
@@ -556,18 +556,21 @@ python cli.py
 
 ```
 forelka-userbot-telethon/
-├── main.py                 # Точка входа, инициализация
-├── kernel.py               # Ядро системы, управление
-├── loader.py               # Загрузчик модулей
-├── cli.py                  # CLI панель управления
-├── inline_bot.py           # Инлайн-бот функциональность
-├── database.py             # Работа с SQLite
-├── meta_lib.py             # Утилиты метаданных
-├── webapp.py               # Веб-интерфейс авторизации
-├── tunnel.py               # Туннелирование (localhost.run)
-├── Updater.py              # Автообновление
-├── utils.py                # Вспомогательные утилиты
-│
+├── novaub.py               # Точка входа, инициализация
+├── core/                   # Ядро системы
+│   ├── kernel.py           # Управление клиентом и конфигом
+│   ├── config.py           # Единый конфиг (config-<id>.json)
+│   ├── database.py         # Асинхронная БД (aiosqlite, novaub.db)
+│   ├── loader.py           # Загрузчик модулей (.dlm/.lm/.ulm/.rlm)
+│   ├── inline.py           # Инлайн-бот
+│   ├── meta_lib.py         # Утилиты метаданных
+│   ├── updater.py          # Автообновление
+│   ├── tunnel.py           # Туннелирование (localhost.run)
+│   └── utils.py            # Вспомогательные утилиты
+├── web/                    # Веб-панель авторизации
+│   └── webapp.py           # Вход по API ID/HASH + 2FA через браузер
+├── cli/                    # CLI панель управления
+│   └── cli.py              # Интерактивная консоль
 ├── modules/                # Системные модули
 │   ├── ping.py             # Проверка задержки
 │   ├── help.py             # Справка по командам
@@ -583,7 +586,7 @@ forelka-userbot-telethon/
 │   ├── restart.py          # Перезапуск
 │   ├── terminal.py         # Выполнение команд
 │   └── info.py             # Информация о системе
-│
+
 ├── loaded_modules/         # Пользовательские модули
 │   └── ...                 # Загружаемые модули
 │
@@ -691,7 +694,7 @@ pip install telethon
 
 ```bash
 rm forelka-*.session
-python main.py
+python novaub.py
 ```
 
 #### `API ID/HASH не найдены`

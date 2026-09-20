@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 NovaUB CLI - Интерактивная консоль управления
-Запуск: python cli.py
+Запуск: python cli/cli.py (или python -m cli)
 """
 
 import os
@@ -13,6 +13,10 @@ import shutil
 import subprocess
 from datetime import datetime
 from pathlib import Path
+
+# Корень проекта: cli/ вложена в него, данные (логи, сессии) лежат выше.
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
 
 
 def setup_git_safe_directory():
@@ -207,7 +211,7 @@ def main_menu(user_id):
             execute_command_menu(user_id)
         elif choice == "0":
             print(f"\n{Colors.CYAN}👋 Goodbye! Юзербот продолжает работать в фоне.{Colors.RESET}")
-            print(f"  {Colors.YELLOW}Для остановки выполните: python cli.py stop{Colors.RESET}\n")
+            print(f"  {Colors.YELLOW}Для остановки выполните: python cli/cli.py stop{Colors.RESET}\n")
             sys.exit(0)
 
 # ────────────────────────────────────────────────
@@ -224,7 +228,7 @@ def status_menu(user_id):
         
         # Считаем модули
         modules_count = 0
-        for folder in ['modules', 'loaded_modules']:
+        for folder in [os.path.join(ROOT, 'modules'), os.path.join(ROOT, 'loaded_modules')]:
             if os.path.exists(folder):
                 modules_count += len([f for f in os.listdir(folder) if f.endswith('.py') and f != '__init__.py'])
         
@@ -342,8 +346,8 @@ def modules_menu(user_id):
         
         # Системные модули
         sys_modules = []
-        if os.path.exists('modules'):
-            for f in os.listdir('modules'):
+        if os.path.exists(os.path.join(ROOT, 'modules')):
+            for f in os.listdir(os.path.join(ROOT, 'modules')):
                 if f.endswith('.py') and f != '__init__.py':
                     sys_modules.append(f[:-3])
         
@@ -402,7 +406,7 @@ def load_module_cli():
         get_input("Нажмите Enter... ")
         return
     
-    dest_path = f"loaded_modules/{module_name}"
+    dest_path = os.path.join(ROOT, "loaded_modules", module_name)
     
     # Проверяем, не защищённый ли это модуль
     protected = ['loader', 'main']
@@ -430,7 +434,7 @@ def unload_module_cli():
         get_input("Нажмите Enter... ")
         return
     
-    for folder in ['loaded_modules', 'modules']:
+    for folder in [os.path.join(ROOT, 'loaded_modules'), os.path.join(ROOT, 'modules')]:
         path = f"{folder}/{name}.py"
         if os.path.exists(path):
             os.remove(path)
@@ -451,7 +455,7 @@ def module_info_cli():
     print(f"\n{Colors.YELLOW}Введите имя модуля:{Colors.RESET}")
     name = get_input("> ")
     
-    for folder in ['modules', 'loaded_modules']:
+    for folder in [os.path.join(ROOT, 'modules'), os.path.join(ROOT, 'loaded_modules')]:
         path = f"{folder}/{name}.py"
         if os.path.exists(path):
             print(f"\n{Colors.BOLD}Информация о модуле {name}:{Colors.RESET}")
@@ -673,7 +677,7 @@ def logs_menu(user_id):
         print_header("📋 Логи")
         print()
         
-        log_file = "novaub.log"
+        log_file = os.path.join(ROOT, "novaub.log")
         
         if not os.path.exists(log_file):
             print(f"{Colors.YELLOW}Файл логов не найден: {log_file}{Colors.RESET}")
@@ -728,7 +732,7 @@ def logs_menu(user_id):
             return
 
 def show_more_logs(n=50):
-    log_file = "novaub.log"
+    log_file = os.path.join(ROOT, "novaub.log")
     if not os.path.exists(log_file):
         return
     
@@ -746,7 +750,7 @@ def show_more_logs(n=50):
     get_input("Нажмите Enter... ")
 
 def show_error_logs():
-    log_file = "novaub.log"
+    log_file = os.path.join(ROOT, "novaub.log")
     if not os.path.exists(log_file):
         return
     
@@ -767,7 +771,7 @@ def search_logs():
     print(f"\n{Colors.YELLOW}Введите текст для поиска:{Colors.RESET}")
     pattern = get_input("> ")
     
-    log_file = "novaub.log"
+    log_file = os.path.join(ROOT, "novaub.log")
     if not os.path.exists(log_file):
         return
     
@@ -793,7 +797,7 @@ def clear_logs():
     
     if choice == "1":
         try:
-            with open("novaub.log", 'w') as f:
+            with open(os.path.join(ROOT, "novaub.log"), 'w') as f:
                 pass
             print(f"{Colors.GREEN}Логи очищены{Colors.RESET}")
         except Exception as e:
@@ -1037,7 +1041,7 @@ def is_bot_running():
     try:
         # Ищем процесс main.py с нашим session файлом
         result = subprocess.run(
-            ['pgrep', '-f', 'python.*main.py'],
+            ['pgrep', '-f', 'python.*novaub.py'],
             capture_output=True,
             text=True
         )
@@ -1323,7 +1327,7 @@ def execute_command(user_id, command):
     
     # Ищем модуль с этой командой
     found = False
-    for folder in ['modules', 'loaded_modules']:
+    for folder in [os.path.join(ROOT, 'modules'), os.path.join(ROOT, 'loaded_modules')]:
         if not os.path.exists(folder):
             continue
         
@@ -1382,14 +1386,14 @@ def diagnostics_menu(user_id):
         checks.append(("Database", db_exists, "novaub.db"))
         
         # Проверка папок
-        modules_exists = os.path.exists("modules")
+        modules_exists = os.path.exists(os.path.join(ROOT, "modules"))
         checks.append(("Modules folder", modules_exists, "modules/"))
         
-        loaded_modules_exists = os.path.exists("loaded_modules")
+        loaded_modules_exists = os.path.exists(os.path.join(ROOT, "loaded_modules"))
         checks.append(("Loaded modules", loaded_modules_exists, "loaded_modules/"))
         
         # Проверка логов
-        log_exists = os.path.exists("novaub.log")
+        log_exists = os.path.exists(os.path.join(ROOT, "novaub.log"))
         checks.append(("Log file", log_exists, "novaub.log"))
         
         # Проверка репозиториев
@@ -1470,9 +1474,9 @@ def main():
             sys.exit(0)
         elif sys.argv[1] == "help":
             print(f"\n{Colors.BOLD}NovaUB CLI - Доступные команды:{Colors.RESET}")
-            print(f"  python cli.py       - Запустить интерактивный CLI")
-            print(f"  python cli.py stop  - Информация об остановке")
-            print(f"  python cli.py help  - Эта справка")
+            print(f"  python cli/cli.py       - Запустить интерактивный CLI")
+            print(f"  python cli/cli.py stop  - Информация об остановке")
+            print(f"  python cli/cli.py help  - Эта справка")
             sys.exit(0)
     
     # Находим ID аккаунта

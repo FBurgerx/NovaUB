@@ -13,19 +13,22 @@ from telethon import TelegramClient, events
 from telethon.tl.types import PeerChannel, PeerChat, PeerUser
 from telethon.tl.functions.channels import (
     CreateChannelRequest,
-    EditAdminRequest,
-    InviteToChannelRequest
-)
-from telethon.tl.functions.messages import (
-    CreateForumTopicRequest,
-    GetForumTopicsRequest
+    EditChatAdminRequest,
+    InviteToChannelRequest,
+    GetForumTopicsRequest,
+    CreateForumTopicRequest
 )
 from telethon.tl.types import ChatAdminRights
 
 import sqlite3
 import struct
 
-from kernel import Kernel
+from core.kernel import Kernel
+from core import config as nova_config
+
+# Корень проекта: novaub.py лежит в корне. Все файлы данных (сессии, логи,
+# конфиги, БД) ищутся и создаются относительно него, а не от CWD запуска.
+ROOT = os.path.dirname(os.path.abspath(__file__))
 
 # Telethon-MCUB по умолчанию ставит protection mode 'strict', который блокирует
 # account.GetPasswordRequest. Telethon вызывает его внутри sign_in(password=...)
@@ -33,12 +36,12 @@ from kernel import Kernel
 # Protection mode настраивается в config-<id>.json -> protection.mode
 # (по умолчанию 'safe': всё ещё блокирует удаление аккаунта, сброс сессий и
 # пароля, логоут, но разрешает вход по 2FA).
-import config as nova_config
+from core import config as nova_config
 
 # Загружаем версию из файла
 def get_version():
     try:
-        with open('version.txt', 'r') as f:
+        with open(os.path.join(ROOT, 'version.txt'), 'r') as f:
             return f.read().strip()
     except:
         return "1.0.0"
@@ -149,7 +152,7 @@ def _convert_pyrogram_to_telethon(session_file):
 class TerminalLogger:
     def __init__(self):
         self.terminal = sys.stdout
-        self.log = open("novaub.log", "a", encoding="utf-8")
+        self.log = open(os.path.join(ROOT, "novaub.log"), "a", encoding="utf-8")
         self.ignore_list = [
             "PERSISTENT_TIMESTAMP_OUTDATED",
             "updates.GetChannelDifference",
@@ -225,7 +228,7 @@ def load_saved_api_for_session(session_filename: str):
 def _list_session_files():
     """Сессии nova-<id>.session и легаси forelka-<id>.session."""
     try:
-        files = os.listdir()
+        files = os.listdir(ROOT)
     except Exception:
         return []
     return sorted(
@@ -244,8 +247,8 @@ async def _terminal_login_create_session():
     await temp.start()
     me = await temp.get_me()
     await temp.disconnect()
-    os.rename("temp.session", f"nova-{me.id}.session")
-    return f"nova-{me.id}.session"
+    os.rename("temp.session", os.path.join(ROOT, f"nova-{me.id}.session"))
+    return os.path.join(ROOT, f"nova-{me.id}.session")
 
 def _watch_process_output_for_url(proc: subprocess.Popen, label: str):
     url_re = re.compile(r"(https?://[a-zA-Z0-9.-]+\.(?:localhost\.run|lhr\.life))")
@@ -284,7 +287,7 @@ async def _web_login_create_session(with_tunnel: bool = False):
     print(f"Web panel: http://{host}:{port}")
 
     proc = subprocess.Popen(
-        [sys.executable, "webapp.py"],
+        [sys.executable, os.path.join(ROOT, "web", "webapp.py")],
         env={**os.environ, "FORELKA_WEB_HOST": host, "FORELKA_WEB_PORT": str(port)},
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -582,7 +585,7 @@ def load_modules_with_config(client, kernel):
     commands = {}
     kernel.module_configs = getattr(kernel, 'module_configs', {})
 
-    folders = ["modules", "loaded_modules"]
+    folders = [os.path.join(ROOT, "modules"), os.path.join(ROOT, "loaded_modules")]
 
     for folder in folders:
         if not os.path.exists(folder):
@@ -602,7 +605,7 @@ def load_modules_with_config(client, kernel):
                     continue
 
                 module = importlib.util.module_from_spec(spec)
-                sys.modules[f"modules_{module_name}" if folder == "modules" else f"loaded_{module_name}"] = module
+                sys.modules[f"modules_{module_name}" if os.path.basename(folder) == "modules" else f"loaded_{module_name}"] = module
                 spec.loader.exec_module(module)
 
                 if hasattr(module, 'register'):
@@ -719,7 +722,7 @@ async def main():
 
     # Единая база: постоянный aiosqlite-коннект + миграция nova_config.db.
     try:
-        import database as db
+        from core import database as db
         await db.ensure_started()
         client.db = db
     except Exception as e:
@@ -731,7 +734,7 @@ async def main():
     client.commands = load_modules_with_config(client, kernel)
 
     try:
-        from loader import register_loader_commands
+        from core.loader import register_loader_commands
         register_loader_commands(client)
         if "loader" not in client.loaded_modules:
             client.loaded_modules.add("loader")

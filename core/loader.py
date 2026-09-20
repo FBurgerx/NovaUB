@@ -9,20 +9,23 @@ import traceback
 import requests
 from telethon import events
 
-import database as db
+from core import database as db
 
-from meta_lib import extract_command_descriptions, read_module_meta
+from core.meta_lib import extract_command_descriptions, read_module_meta
 
 REPOS_FILE = "repos.json"
 
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
 def _personal_folder(client):
-    folder = "loaded_modules"
+    folder = os.path.join(ROOT, "loaded_modules")
     if not os.path.exists(folder):
         os.makedirs(folder)
     return folder
 
 def is_protected(name):
-    return os.path.exists(f"modules/{name}.py") or name in ["loader", "main"]
+    return os.path.exists(os.path.join(ROOT, "modules", f"{name}.py")) or name in ["loader", "main"]
 
 def _escape(value):
     return html.escape(str(value)) if value is not None else ""
@@ -742,7 +745,7 @@ async def pip_cmd(client, message, args):
 def _module_key(folder: str, name: str) -> str:
     """Ключ в sys.modules. Префикс папки нужен, чтобы modules/config.py
     не затенял корневой config.py (и modules/help.py — другие модули)."""
-    prefix = "modules_" if folder == "modules" else "loaded_"
+    prefix = "modules_" if os.path.basename(folder) == "modules" else "loaded_"
     return f"{prefix}{name}"
 
 
@@ -807,7 +810,7 @@ def unload_module(app, name):
             for k in to_remove:
                 app.commands.pop(k, None)
         # Вычищаем модуль из sys.modules, иначе reload подхватит старый код.
-        for folder in ("modules", "loaded_modules"):
+        for folder in (os.path.join(ROOT, "modules"), os.path.join(ROOT, "loaded_modules")):
             sys.modules.pop(_module_key(folder, name), None)
 
 
@@ -908,7 +911,7 @@ def load_all(app, kernel=None):
     personal = _personal_folder(app)
     disabled = _disabled_modules()
 
-    for d in ["modules", personal]:
+    for d in [os.path.join(ROOT, "modules"), personal]:
         if not os.path.exists(d):
             os.makedirs(d)
         for f in sorted(os.listdir(d)):

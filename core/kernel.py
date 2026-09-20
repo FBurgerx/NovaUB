@@ -8,7 +8,7 @@ from pathlib import Path
 from telethon import TelegramClient, functions
 from telethon.tl.types import PeerChannel
 from telethon.errors import SessionPasswordNeededError
-from inline_bot import InlineBot
+from core.inline import InlineBot
 
 class Colors:
     RESET = "\033[0m"
@@ -45,7 +45,7 @@ class Kernel:
         # Единый конфиг аккаунта (config-<id>.json), с миграцией легаси-файлов.
         self.user_id = getattr(client, "_self_id", None)
         try:
-            import config as nova_config
+            from core import config as nova_config
             self.config = nova_config.load(self.user_id) if self.user_id else self._load_config()
         except Exception:
             self.config = self._load_config()
@@ -149,7 +149,7 @@ class Kernel:
                 return
             if not getattr(self, "user_id", None):
                 return
-            import config as nova_config
+            from core import config as nova_config
             config = nova_config.load(self.user_id)
             group_id = config.get("management_group_id")
             topics = config.get("management_topics") or {}
@@ -171,7 +171,7 @@ class Kernel:
     async def get_module_config(self, module_name):
         """Получает конфигурацию модуля из SQLite (единый db-слой)."""
         try:
-            import database as db
+            from core import database as db
             return await db.get_module_config(module_name)
         except Exception:
             return {}
