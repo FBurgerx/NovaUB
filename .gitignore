@@ -18,8 +18,10 @@ forelka_config.db
 
 # Конфиги аккаунтов (api_id/api_hash, токены, owners)
 config-*.json
+config.json
 telegram_api-*.json
 kernel_config-*.json
+kernel_config.json
 module_config-*.json
 
 # Логи
