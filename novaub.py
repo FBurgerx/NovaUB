@@ -25,6 +25,7 @@ import struct
 
 from core.kernel import Kernel
 from core import config as nova_config
+from core import commands as nova_commands
 
 # Корень проекта: novaub.py лежит в корне. Все файлы данных (сессии, логи,
 # конфиги, БД) ищутся и создаются относительно него, а не от CWD запуска.
@@ -343,10 +344,30 @@ async def _web_login_create_session(with_tunnel: bool = False):
 def is_owner(client, user_id):
     return nova_config.is_owner(client._self_id, user_id)
 
-def _prefix_and_aliases(client):
+
+# Пер-пользовательный кулдаун команд (новый стиль: @command(cooldown=...))
+_cooldown = nova_commands.Cooldown()
+
+def _prefix_and_aliases(client, user_id=None):
     """Префикс и алиасы из единого конфига (с кэшем)."""
-    cfg = nova_config.load(client._self_id)
+    cfg = nova_config.load(user_id or client._self_id)
     return cfg.prefix, (cfg.aliases or {})
+
+
+def _check_access(level: str, client, user_id) -> bool:
+    """Проверяет уровень доступа команды.
+
+    public  — все
+    trusted — владелец или доверенный (owners из конфига)
+    owner   — только владелец
+    """
+    level = (level or "owner").lower()
+    if level == "public":
+        return True
+    if level == "trusted":
+        return nova_config.is_owner(client._self_id, user_id)
+    return nova_config.is_owner(client._self_id, user_id)
+
 
 async def handler(event):
     client = event.client
@@ -355,6 +376,7 @@ async def handler(event):
     if not message.text:
         return
 
+    from_id = getattr(message, "sender_id", None) or getattr(getattr(message, "sender", None), "id", None)
     pref, aliases = _prefix_and_aliases(client)
 
     if not message.text.startswith(pref):
@@ -372,6 +394,38 @@ async def handler(event):
         cmd = aliases[cmd]
 
     if cmd in client.commands:
+        entry = client.commands[cmd]
+        # Прячем алиасы из dispatch — они разрешаются на основном имени
+        if entry.get("alias_of"):
+            cmd = entry["alias_of"]
+            entry = client.commands.get(cmd, entry)
+
+        # --- Права ---
+        level = entry.get("level", "owner")
+        if not _check_access(level, client, from_id):
+            try:
+                await message.edit(
+                    "<blockquote><tg-emoji emoji-id=5778527486270770928>⛔</tg-emoji> "
+                    "<b>Доступ запрещён.</b></blockquote>",
+                    parse_mode="html",
+                )
+            except Exception:
+                pass
+            return
+
+        # --- Кулдаун ---
+        cooldown = entry.get("cooldown") or 0
+        if cooldown and not _cooldown.check(cmd, from_id, cooldown):
+            try:
+                await message.edit(
+                    "<blockquote><tg-emoji emoji-id=5891211339170326418>⌛</tg-emoji> "
+                    "<b>Слишком быстро.</b> Подождите немного.</blockquote>",
+                    parse_mode="html",
+                )
+            except Exception:
+                pass
+            return
+
         try:
             await client.commands[cmd]["func"](client, message, args)
             if hasattr(client, 'kernel') and client.kernel:
@@ -424,6 +478,26 @@ async def owner_handler(event):
         cmd = aliases[cmd]
 
     if cmd in client.commands:
+        entry = client.commands[cmd]
+        if entry.get("alias_of"):
+            cmd = entry["alias_of"]
+            entry = client.commands.get(cmd, entry)
+
+        # owner_handler и так работает только от владельца — права избыточны,
+        # но кулдаун всё равно уважаем
+        cooldown = entry.get("cooldown") or 0
+        if cooldown and not _cooldown.check(cmd, message.sender_id, cooldown):
+            try:
+                await client.send_message(
+                    message.chat_id,
+                    "<blockquote><tg-emoji emoji-id=5891211339170326418>⌛</tg-emoji> "
+                    "<b>Слишком быстро.</b> Подождите немного.</blockquote>",
+                    parse_mode="html",
+                )
+            except Exception:
+                pass
+            return
+
         try:
             sent_msg = await client.send_message(message.chat_id, message.text)
             await client.commands[cmd]["func"](client, sent_msg, args)
@@ -581,9 +655,19 @@ async def retry_add_bot_to_group(kernel):
 
 # === ИСПРАВЛЕННАЯ ФУНКЦИЯ ЗАГРУЗКИ МОДУЛЕЙ ===
 def load_modules_with_config(client, kernel):
-    """Загружает модули из modules/ и loaded_modules/ + регистрирует loader"""
+    """Загружает модули из modules/ и loaded_modules/ + регистрирует loader
+
+    Поддерживает два стиля:
+      1. Новый — команды объявлены через @command(...) в теле модуля.
+         Ядро само собирает их, алиасы, описания, уровни доступа и кулдауны.
+      2. Старый — модуль экспортирует register(app, commands, module_name[, kernel]).
+         Оставлен для обратной совместимости.
+    """
     commands = {}
     kernel.module_configs = getattr(kernel, 'module_configs', {})
+
+    # Хуки жизненного цикла: "startup" / "shutdown"
+    client._novaub_hooks = {"startup": [], "shutdown": []}
 
     folders = [os.path.join(ROOT, "modules"), os.path.join(ROOT, "loaded_modules")]
 
@@ -608,24 +692,65 @@ def load_modules_with_config(client, kernel):
                 sys.modules[f"modules_{module_name}" if os.path.basename(folder) == "modules" else f"loaded_{module_name}"] = module
                 spec.loader.exec_module(module)
 
-                if hasattr(module, 'register'):
-                    sig = inspect.signature(module.register)
-                    num_params = len(sig.parameters)
+                # --- Новый стиль: декораторы @command/@inline/@hook ---
+                try:
+                    collected = nova_commands.collect(module)
+                except Exception as e:
+                    print(f"[-] Ошибка сбора команд {module_name}: {type(e).__name__}: {e}")
+                    collected = {"commands": [], "inlines": [], "hooks": []}
 
-                    if num_params >= 4:
-                        module.register(client, commands, module_name, kernel)
-                    elif num_params == 3:
-                        module.register(client, commands, module_name)
-                    elif num_params == 2:
-                        module.register(client, commands)
-                    else:
-                        module.register(client)
+                if collected["commands"] or collected["inlines"] or collected["hooks"]:
+                    for cmd in collected["commands"]:
+                        entry = {
+                            "func": cmd["func"],
+                            "module": module_name,
+                            "name": cmd["name"],
+                            "aliases": cmd.get("aliases", []),
+                            "desc": cmd.get("desc", ""),
+                            "usage": cmd.get("usage", ""),
+                            "example": cmd.get("example", ""),
+                            "cooldown": cmd.get("cooldown", 0),
+                            "level": cmd.get("level", "owner"),
+                            "hidden": cmd.get("hidden", False),
+                        }
+                        commands[cmd["name"]] = entry
+                        # алиасы разрешаются ядром при dispatch
+                        for alias in cmd.get("aliases", []):
+                            commands.setdefault(alias, dict(entry, name=alias, alias_of=cmd["name"]))
+                        print(f"  [c] .{cmd['name']}" + (f" (+{len(cmd.get('aliases', []))} алиас)" if cmd.get('aliases') else ""))
 
-                    print(f"[+] Загружен модуль: {module_name} из {folder}")
+                    for il in collected["inlines"]:
+                        if kernel is not None:
+                            kernel.register_inline_handler(il["func"])
+                            print(f"  [i] inline: {il['name']}")
 
-                    if hasattr(module, 'get_config'):
-                        kernel.module_configs[module_name] = module.get_config
-                        print(f"    [i] Конфигурация зарегистрирована для: {module_name}")
+                    for hk in collected["hooks"]:
+                        evt = hk.get("event", "")
+                        if evt in client._novaub_hooks:
+                            client._novaub_hooks[evt].append(hk["func"])
+                            print(f"  [h] hook: {evt}")
+
+                    print(f"[+] Загружен модуль: {module_name} (новый стиль) из {folder}")
+                else:
+                    # --- Старый стиль: register() ---
+                    if hasattr(module, 'register'):
+                        sig = inspect.signature(module.register)
+                        num_params = len(sig.parameters)
+
+                        if num_params >= 4:
+                            module.register(client, commands, module_name, kernel)
+                        elif num_params == 3:
+                            module.register(client, commands, module_name)
+                        elif num_params == 2:
+                            module.register(client, commands)
+                        else:
+                            module.register(client)
+
+                        print(f"[+] Загружен модуль: {module_name} из {folder}")
+
+                if hasattr(module, 'get_config'):
+                    kernel.module_configs[module_name] = module.get_config
+                    print(f"    [i] Конфигурация зарегистрирована для: {module_name}")
 
                 if not hasattr(client, 'loaded_modules'):
                     client.loaded_modules = set()

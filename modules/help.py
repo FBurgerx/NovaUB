@@ -4,7 +4,7 @@ import os
 import sys
 from telethon.tl.custom import Message
 
-from meta_lib import extract_command_descriptions, read_module_meta
+from core.meta_lib import extract_command_descriptions, read_module_meta
 
 LIST_ALIASES = {"list", "all", "ls"}
 

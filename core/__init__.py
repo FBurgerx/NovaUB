@@ -2,36 +2,16 @@
 
 Папка core/ содержит системные модули. Модули пользователя (modules/,
 loaded_modules/) НЕ должны импортировать внутренности ядра напрямую —
-для них есть стабильный API, доступный через `import core`.
+для них есть стабильный API в этом файле.
 
-Обратная совместимость: до рефакторинга скрипты делали
-    import config as nova_config
-    from meta_lib import ...
-    from utils import get_args_raw
-
-Эти имена по-прежнему работают из любой точки проекта — core
-прокидывает их в себя. Это нужно, чтобы сторонние модули не сломались.
+Обратная совместимость: модули, которые уже используют register(), продолжают
+работать — загрузчик определяет стиль автоматически (см. novaub.py,
+load_modules_with_config).
 """
 
-# Стабильный публичный API ядра. Расширяем по мере необходимости.
-from . import config as config
-from . import database as database
-from . import kernel as kernel
-from . import loader as loader
+# Стабильный API для модулей
+from core.commands import command, inline, hook  # noqa: F401
+from core import config, database  # noqa: F401
+from core.config import is_owner  # noqa: F401
 
-__all__ = ["config", "database", "kernel", "loader"]
-
-# --- Обратная совместимость со старыми плоскими импортами ---
-# Модули из modules/loaded_modules могли использовать "import config".
-# Прокидываем ссылку в sys.modules, чтобы старый код не сломался.
-import sys as _sys
-
-for _name in ("config", "database", "meta_lib", "utils"):
-    if _name not in _sys.modules:
-        try:
-            _sys.modules[_name] = __import__(
-                f"core.{_name}", fromlist=[_name]
-            )
-        except Exception:
-            pass
-del _sys, _name
+__all__ = ["command", "inline", "hook", "config", "database", "is_owner"]
