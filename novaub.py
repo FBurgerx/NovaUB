@@ -13,11 +13,40 @@ from telethon import TelegramClient, events
 from telethon.tl.types import PeerChannel, PeerChat, PeerUser
 from telethon.tl.functions.channels import (
     CreateChannelRequest,
-    EditChatAdminRequest,
     InviteToChannelRequest,
-    GetForumTopicsRequest,
-    CreateForumTopicRequest
 )
+
+# ── Импорты, которых может не быть в установленной версии telethon ───────
+# Ядро не должно падать при старте только из-за того, что telethon старый:
+# функции, которым эти классы нужны, используют getattr-проверку и сами
+# отключаются, если поддержки нет (см. _tl_class).
+
+def _tl_class(module_name: str, name: str):
+    """Достаёт TL-класс из telethon или возвращает None, если его нет."""
+    try:
+        module = __import__(
+            f"telethon.tl.functions.{module_name}",
+            fromlist=[name],
+        )
+    except Exception:
+        return None
+    return getattr(module, name, None)
+
+
+# forum-топики: старые/обрезанные сборки telethon могут их не иметь
+_CreateForumTopicRequest = _tl_class("channels", "CreateForumTopicRequest")
+_GetForumTopicsRequest = _tl_class("channels", "GetForumTopicsRequest")
+# выдача админки: в старых версиях называется EditAdminRequest
+_EditChatAdminRequest = (
+    _tl_class("channels", "EditChatAdminRequest")
+    or _tl_class("channels", "EditAdminRequest")
+)
+
+if _CreateForumTopicRequest is None:
+    print("[i] telethon не поддерживает forum-топики — management-группа будет без топиков")
+if _EditChatAdminRequest is None:
+    print("[i] telethon не поддерживает выдачу админки — бот не станет админом management-группы")
+
 from telethon.tl.types import ChatAdminRights
 
 import sqlite3
@@ -539,6 +568,9 @@ async def setup_management_group(kernel):
 
     print("Настройка группы управления...")
 
+    if _CreateForumTopicRequest is None:
+        print("[!] Управление топиками недоступно — telethon не поддерживает forum-топики")
+
     try:
         group = await kernel.client(CreateChannelRequest(
             title="NovaUB Management",
@@ -549,16 +581,19 @@ async def setup_management_group(kernel):
         group_id = -group.chats[0].id
         print(f"Супергруппа создана: {group_id}")
 
-        # Создаём топики
+        # Создаём топики (только если telethon поддерживает)
         topics = ["Логи", "Команды", "Бекапы", "Мусорка"]
         topic_ids = {}
-        for topic_name in topics:
-            result = await kernel.client(CreateForumTopicRequest(
-                peer=group_id,
-                title=topic_name
-            ))
-            topic_ids[topic_name] = result.updates[0].id
-            print(f"Топик '{topic_name}' создан.")
+        if _CreateForumTopicRequest is not None:
+            for topic_name in topics:
+                result = await kernel.client(_CreateForumTopicRequest(
+                    peer=group_id,
+                    title=topic_name
+                ))
+                topic_ids[topic_name] = result.updates[0].id
+                print(f"Топик '{topic_name}' создан.")
+        else:
+            print(f"[!] Пропускаю создание топиков: {topics}")
 
         config["management_group_id"] = group_id
         config["management_topics"] = topic_ids
@@ -625,6 +660,10 @@ async def add_bot_to_management_group(kernel):
         print("✓ Инлайн-бот добавлен в management группу.")
 
         # Назначаем бота админом со всеми правами
+        if _EditChatAdminRequest is None:
+            print("[!] telethon не поддерживает выдачу админки — пропуск")
+            return
+
         full_rights = ChatAdminRights(
             post_messages=True,
             edit_messages=True,
@@ -637,7 +676,7 @@ async def add_bot_to_management_group(kernel):
             manage_call=True,
             other=True
         )
-        await kernel.client(EditAdminRequest(
+        await kernel.client(_EditChatAdminRequest(
             channel=PeerChannel(channel_id),
             user_id=bot_entity.id,
             admin_rights=full_rights,
