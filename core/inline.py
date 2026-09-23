@@ -288,6 +288,7 @@ class InlineBot:
         @self.bot_client.on(events.InlineQuery)
         async def universal_inline_handler(event):
             query_text = event.text.strip()
+
             if query_text.startswith("trigger_"):
                 trigger_name = query_text[len("trigger_"):]
                 handler = self.kernel.inline_trigger_handlers.get(trigger_name)

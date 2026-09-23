@@ -5,6 +5,7 @@ import sys
 from telethon.tl.custom import Message
 
 from core.meta_lib import extract_command_descriptions, read_module_meta
+from core.rich import send_rich, table, details, list_items, emoji
 
 LIST_ALIASES = {"list", "all", "ls"}
 
@@ -219,6 +220,12 @@ async def help_cmd(client, message, args):
     module_cmds = _collect_commands(client)
     module_names = sorted(set(module_cmds.keys()) | set(getattr(client, "loaded_modules", set())))
 
+    # Rich-режим: .help rich (или .help rich <модуль>) — отправляет
+    # полноценную таблицу/<details> через инлайн-бота.
+    rich_mode = bool(args) and args[0].lower() == "rich"
+    if rich_mode:
+        args = args[1:]
+
     if args and args[0].lower() not in LIST_ALIASES:
         target = args[0]
         module_name, matches = _resolve_target(target, module_names, client.commands, pref)
@@ -246,8 +253,84 @@ async def help_cmd(client, message, args):
         detail = _render_module_detail(client, module_name, module, meta, pref)
         return await message.edit(detail, parse_mode='html')
 
+    # ── Список всех модулей ──────────────────────────────────────────────
+    if rich_mode:
+        ok = await _send_rich_help(client, message, module_cmds, pref)
+        if ok:
+            return
+        # бот недоступен → обычный текст
+
     text = _render_module_list(client, module_cmds, pref)
     await message.edit(text, parse_mode='html')
+
+
+async def _send_rich_help(client, message, module_cmds, pref):
+    """Отправляет .help как настоящее rich-сообщение (таблица + details).
+
+    Возвращает True при успехе, False если бот недоступен
+    (тогда help падает на обычный текстовый режим).
+    """
+    sys_mods, ext_mods = {}, {}
+
+    def _split(mods_dict, src, is_ext):
+        for mod, cmds in sorted(mods_dict.items()):
+            target = ext_mods if is_ext else sys_mods
+            target.setdefault(mod, []).extend(cmds)
+
+    for cmd_name, info in client.commands.items():
+        if not isinstance(info, dict) or info.get("alias_of"):
+            continue
+        mod_name = info.get("module", "unknown")
+        mod = _find_module(mod_name)
+        mod_path = getattr(mod, "__file__", "") or "" if mod else ""
+        if "loaded_modules" in mod_path:
+            ext_mods.setdefault(mod_name, []).append(cmd_name)
+        else:
+            sys_mods.setdefault(mod_name, []).append(cmd_name)
+
+    def _build_section(title, mods_dict):
+        if not mods_dict:
+            return ""
+        rows = []
+        for mod, cmds in sorted(mods_dict.items()):
+            mod_obj = _find_module(mod)
+            meta = read_module_meta(mod_obj, mod, cmds) if mod_obj else {}
+            display = (meta.get("name") if meta else None) or mod
+            cmds_str = " | ".join(f"{pref}{c}" for c in sorted(cmds))
+            rows.append([display, cmds_str])
+        return (
+            f"<h3>{_escape(title)}</h3>"
+            + table(["Модуль", "Команды"], rows)
+        )
+
+    html_text = (
+        f"<h1>NovaUB Modules</h1>"
+        + _build_section("Системные", sys_mods)
+        + _build_section("Внешние", ext_mods)
+        + details(
+            "Подробнее о модуле",
+            f"<p>Используй <code>{pref}help &lt;имя&gt;</code> "
+            f"для карточки модуля</p>",
+        )
+    )
+
+    try:
+        reply_to = getattr(message, "reply_to_msg_id", None) or None
+        result = await send_rich(
+            client,
+            message.peer_id,
+            html_text,
+            reply_to=reply_to,
+        )
+        if result is not None:
+            try:
+                await message.delete()
+            except Exception:
+                pass
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def register(app, commands, module_name):
