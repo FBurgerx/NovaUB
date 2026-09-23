@@ -6,7 +6,7 @@ import re
 import sys
 from telethon import TelegramClient, events, Button
 from telethon.tl.types import (
-    InputBotInlineMessageRichMessage, InputRichMessageHTML,
+    InputBotInlineMessageRichMessage, InputRichMessage,
     BotInlineResult, BotInlineMessageRichMessage,
 )
 
@@ -308,17 +308,23 @@ class InlineBot:
                     await event.answer([])
                     return
                 try:
+                    from core.rich_parser import parse_rich_html
+                    blocks = parse_rich_html(html_text)
                     await event.answer([BotInlineResult(
                         id=f"rich_{marker}",
                         type="article",
                         title="Rich",
                         send_message=InputBotInlineMessageRichMessage(
-                            rich_message=InputRichMessageHTML(html=html_text),
+                            rich_message=InputRichMessage(blocks=blocks),
                         ),
                     )], cache_time=0)
-                    self.kernel.logger.info("[rich] rich-результат отдан: %d байт", len(html_text))
+                    self.kernel.logger.info(
+                        "[rich] rich-результат отдан: %d байт / %d блоков",
+                        len(html_text), len(blocks))
                 except Exception as e:
-                    self.kernel.logger.error("[rich] не удалось отдать результат: %s: %s", type(e).__name__, e)
+                    self.kernel.logger.error(
+                        "[rich] не удалось отдать результат: %s: %s",
+                        type(e).__name__, e)
                     try:
                         await event.answer([])
                     except Exception:
