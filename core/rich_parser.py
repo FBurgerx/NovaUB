@@ -1,25 +1,29 @@
 """HTML → PageBlock парсер для rich-сообщений.
 
 Telegram Bot API понимает rich-сообщения двумя способами:
-  • InputRichMessageHTML — сервер оказался не принимает его в inline-ответе
+  • InputRichMessageHTML — сервер его не принимает в inline-ответе
     (бот отвечает «успешно», но Telegram молча отбрасывает результат);
   • InputRichMessage — готовые PageBlock-и. Этот путь работает.
 
 Поэтому HTML сперва парсится в набор PageBlock-ов, а потом отправляется
 через InputRichMessage.
+
+Важный нюанс: текст в PageBlock-ах — это TypeRichText, а не
+TextWithEntities. То есть TextPlain / TextBold / TextItalic / TextConcat,
+а не MessageEntity-подобная структура.
 """
 
 import re
-import html
 from html.parser import HTMLParser
 from telethon.tl.types import (
-    TextWithEntities,
+    TextPlain, TextFixed, TextBold, TextItalic, TextConcat,
     PageBlockParagraph, PageBlockHeading1, PageBlockHeading2,
     PageBlockHeading3, PageBlockHeading4, PageBlockHeading5,
     PageBlockHeading6, PageBlockDetails, PageBlockList,
     PageBlockTable, PageBlockDivider, PageBlockBlockquote,
     PageBlockOrderedList, PageBlockPreformatted,
     PageTableRow, PageTableCell,
+    PageListItemText, PageListOrderedItemText,
 )
 
 _HEADING_TAGS = {
@@ -28,13 +32,65 @@ _HEADING_TAGS = {
     "h5": PageBlockHeading5, "h6": PageBlockHeading6,
 }
 
-_TAG_RE = re.compile(r"<(/?)(\w+)([^>]*)>")
-_ATTR_RE = re.compile(r'(\w[\w-]*)="([^"]*)"')
+# Форматирование внутри инлайн-текста: <b> <i> <code>
+_FMT_RE = re.compile(r"<(/?)(b|strong|i|em|code|tt)(\s[^>]*)?>")
+# Все HTML-теги (для вырезания при получении «голого» текста)
+_ANY_TAG_RE = re.compile(r"<[^>]*>")
 
 
-def _plain(text: str) -> TextWithEntities:
-    """Голый текст без разметки."""
-    return TextWithEntities(text=text, entities=[])
+def _plain(raw: str) -> TextPlain:
+    """Голый текст, теги вырезаются."""
+    return TextPlain(text=_ANY_TAG_RE.sub("", raw))
+
+
+def _rich_text(raw: str):
+    """Инлайн-текст с <b>/<i>/<code> → TextConcat из TextPlain/TextBold/..."""
+    # Разбиваем на сегменты [текст, «открылся тег X», «закрылся тег X»]
+    pos = 0
+    parts = []          # [(text, {bold,italic,fixed})]
+    open_stack = []     # [(kind, start_index_in_parts)]
+
+    def _emit(text: str, flags: set):
+        if text:
+            parts.append((text, flags))
+
+    for m in _FMT_RE.finditer(raw):
+        if m.start() > pos:
+            _emit(raw[pos:m.start()], set(k for k, _s in open_stack))
+        closing, kind, _a = m.group(1), m.group(2).lower(), m.group(3)
+        if closing:
+            # снять последний открытый того же вида
+            for i in range(len(open_stack) - 1, -1, -1):
+                if open_stack[i][0] == kind:
+                    open_stack.pop(i)
+                    break
+        else:
+            open_stack.append((kind, len(parts)))
+        pos = m.end()
+    if pos < len(raw):
+        _emit(raw[pos:], set(k for k, _s in open_stack))
+
+    if not parts:
+        return TextPlain(text="")
+    if len(parts) == 1:
+        text, flags = parts[0]
+        if not flags:
+            return TextPlain(text=text)
+        return _wrap(text, flags)
+    return TextConcat(texts=[_wrap(t, f) for t, f in parts])
+
+
+def _wrap(text: str, flags: set):
+    cls = None
+    if "b" in flags:
+        cls = TextBold
+    elif "i" in flags:
+        cls = TextItalic
+    elif "code" in flags:
+        cls = TextFixed
+    if cls is None:
+        return TextPlain(text=text)
+    return cls(text=text)
 
 
 class _Parser(HTMLParser):
@@ -43,78 +99,64 @@ class _Parser(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.blocks = []
-        self._buf = []          # накопленный текст текущего блока
-        self._stack = []        # открытые блоки (details/quote/list)
-        self._in_list = False
-        self._items = []
+        self._buf = []             # сырой буфер текущего блока (с тегами)
+        self._expect = None        # какой блок сейчас собираем
+        self._summary = None       # <details>
+        self._items = []           # списки
+        self._ordered = False
+        self._rows = []            # таблица
+        self._cells = []
+        self._table_title = ""
+        self._cell_is_header = False
+        self._block_stack = []     # вложенные блоки (внутри <details>)
 
-    # ── текст ──────────────────────────────────────────────────
     def handle_data(self, data):
         self._buf.append(data)
 
-    def _flush(self):
-        text = "".join(self._buf).strip()
+    def _flush_raw(self) -> str:
+        raw = "".join(self._buf)
         self._buf = []
-        return text
+        return raw
 
-    def _entity_text(self, raw: str):
-        """Текст с базовой разметкой: <b>/<i>/<code> → сущности."""
-        # Rich-сообщения принимают только TextWithEntities.
-        # Базовое жирное/курсив/моноширина поддерживаются.
-        from telethon.tl.types import MessageEntityBold, MessageEntityItalic, MessageEntityCode
-        entities = []
-        plain = []
-        pos = 0
-        for m in _TAG_RE.finditer(raw):
-            if m.start() > pos:
-                plain.append(raw[pos:m.start()])
-            tag = m.group(2).lower()
-            if tag in ("b", "strong"):
-                entities.append(MessageEntityBold(pos, 0))
-            elif tag in ("i", "em"):
-                entities.append(MessageEntityItalic(pos, 0))
-            elif tag in ("code", "tt"):
-                entities.append(MessageEntityCode(pos, 0))
-            pos = m.end()
-        if pos < len(raw):
-            plain.append(raw[pos:])
-        text = "".join(plain)
-        # пересчитываем длины: убираем теги, позиции плоского текста
-        # упрощаем — для rich не критично
-        return _plain(html.unescape(text))
+    def _flush_plain(self) -> str:
+        return _ANY_TAG_RE.sub("", self._flush_raw()).strip()
 
-    # ── теги ───────────────────────────────────────────────────
+    def _add_block(self, block):
+        if self._block_stack:
+            self._block_stack[-1].append(block)
+        else:
+            self.blocks.append(block)
+
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
 
-        if tag in _HEADING_TAGS:
+        if tag in _HEADING_TAGS or tag in ("p", "blockquote"):
             self._buf = []
-            self._heading = tag
-
-        elif tag == "p":
-            self._buf = []
-
-        elif tag == "blockquote":
-            self._buf = []
+            self._expect = tag
 
         elif tag == "details":
             self._buf = []
+            self._expect = "details"
             self._summary = None
+            self._block_stack.append([])
 
         elif tag == "summary":
             self._buf = []
 
         elif tag in ("ul", "ol"):
-            self._in_list = True
-            self._items = []
+            self._buf = []
+            self._expect = tag
             self._ordered = (tag == "ol")
+            self._items = []
 
         elif tag == "li":
             self._buf = []
 
         elif tag == "table":
+            self._buf = []
+            self._expect = "table"
             self._rows = []
-            self._in_table = True
+            self._cells = []
             self._table_title = attrs.get("title", "")
 
         elif tag == "tr":
@@ -122,77 +164,84 @@ class _Parser(HTMLParser):
 
         elif tag in ("td", "th"):
             self._buf = []
+            self._cell_is_header = (tag == "th")
 
         elif tag == "divider":
-            self.blocks.append(PageBlockDivider())
+            self._add_block(PageBlockDivider())
 
     def handle_endtag(self, tag):
         if tag in _HEADING_TAGS:
-            text = self._flush()
+            text = self._flush_plain()
             if text:
-                self.blocks.append(_HEADING_TAGS[tag](text=_plain(text)))
+                self._add_block(_HEADING_TAGS[tag](text=_plain(text)))
 
         elif tag == "p":
-            text = self._flush()
+            text = self._flush_plain()
             if text:
-                self.blocks.append(PageBlockParagraph(text=_plain(text)))
+                self._add_block(PageBlockParagraph(text=_rich_text(text)))
 
         elif tag == "blockquote":
-            text = self._flush()
+            text = self._flush_plain()
             if text:
-                self.blocks.append(PageBlockBlockquote(text=_plain(text)))
+                self._add_block(PageBlockBlockquote(
+                    text=_rich_text(text), caption=TextPlain(text="")))
 
         elif tag == "summary":
-            self._summary = self._flush()
+            self._summary = self._flush_plain()
 
         elif tag == "details":
-            text = self._flush()
-            inner = _plain(text) if text else _plain("")
-            summary = getattr(self, "_summary", None) or "Подробнее"
-            self.blocks.append(PageBlockDetails(
+            inner = self._block_stack.pop() if self._block_stack else []
+            text = self._flush_plain()
+            if text and not inner:
+                inner = [PageBlockParagraph(text=_plain(text))]
+            if not inner:
+                inner = [PageBlockParagraph(text=TextPlain(text=""))]
+            summary = self._summary or "Подробнее"
+            self._add_block(PageBlockDetails(
                 title=_plain(summary),
-                blocks=[PageBlockParagraph(text=inner)],
+                blocks=inner,
                 open=False,
             ))
 
         elif tag in ("ul", "ol"):
-            items = self._items or []
-            if items:
-                items_t = [_plain(t) for t in items]
+            if self._items:
                 if self._ordered:
-                    self.blocks.append(PageBlockOrderedList(items=items_t))
+                    items = [PageListOrderedItemText(text=_plain(t))
+                             for t in self._items if t]
+                    if items:
+                        self._add_block(PageBlockOrderedList(items=items))
                 else:
-                    self.blocks.append(PageBlockList(items=items_t))
-            self._in_list = False
-            self._items = []
+                    items = [PageListItemText(text=_plain(t))
+                             for t in self._items if t]
+                    if items:
+                        self._add_block(PageBlockList(items=items))
+            self._expect = None
 
         elif tag == "li":
-            text = self._flush()
+            text = self._flush_plain()
             if text:
                 self._items.append(text)
 
         elif tag in ("td", "th"):
-            text = self._flush()
-            self._cells.append(PageTableCell(text=_plain(text)))
+            text = self._flush_plain()
+            self._cells.append(PageTableCell(
+                text=_plain(text) if text else None,
+                header=self._cell_is_header or None,
+            ))
 
         elif tag == "tr":
-            cells = getattr(self, "_cells", None) or []
-            if cells:
-                self._rows.append(PageTableRow(cells=cells))
+            if self._cells:
+                self._rows.append(PageTableRow(cells=self._cells))
+            self._cells = []
 
         elif tag == "table":
-            rows = getattr(self, "_rows", None) or []
-            if rows:
-                title = getattr(self, "_table_title", "") or ""
-                self.blocks.append(PageBlockTable(
-                    title=_plain(title),
-                    rows=rows,
-                    bordered=True,
+            if self._rows:
+                self._add_block(PageBlockTable(
+                    title=_plain(self._table_title or ""),
+                    rows=self._rows,
                     striped=True,
-                    compact=False,
                 ))
-            self._in_table = False
-            self._rows = []
+            self._expect = None
 
 
 def parse_rich_html(html_text: str):
@@ -200,8 +249,7 @@ def parse_rich_html(html_text: str):
     parser = _Parser()
     parser.feed(html_text)
     parser.close()
-    # хвостовой текст вне тегов
-    tail = parser._flush()
+    tail = parser._flush_plain()
     if tail and not parser.blocks:
         parser.blocks.append(PageBlockParagraph(text=_plain(tail)))
     return parser.blocks or [PageBlockParagraph(text=_plain(html_text))]
