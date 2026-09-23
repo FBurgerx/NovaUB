@@ -307,14 +307,22 @@ class InlineBot:
                     InputBotInlineMessageRichMessage, InputRichMessageHTML,
                     BotInlineResult,
                 )
-                await event.answer([BotInlineResult(
-                    id=f"rich_{marker}",
-                    type="article",
-                    title="Rich",
-                    send_message=InputBotInlineMessageRichMessage(
-                        rich_message=InputRichMessageHTML(html=html_text),
-                    ),
-                )], cache_time=0)
+                try:
+                    await event.answer([BotInlineResult(
+                        id=f"rich_{marker}",
+                        type="article",
+                        title="Rich",
+                        send_message=InputBotInlineMessageRichMessage(
+                            rich_message=InputRichMessageHTML(html=html_text),
+                        ),
+                    )], cache_time=0)
+                    self.kernel.logger.info("[rich] rich-результат отдан: %d байт", len(html_text))
+                except Exception as e:
+                    self.kernel.logger.error("[rich] не удалось отдать результат: %s: %s", type(e).__name__, e)
+                    try:
+                        await event.answer([])
+                    except Exception:
+                        pass
                 return
 
             if query_text.startswith("trigger_"):

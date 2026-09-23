@@ -48,7 +48,9 @@ async def inline_ping_handler(event: events.InlineQuery.Event):
         return
 
     query = event.text.strip()
-    if query == "ping":
+    # Реагируем и на «ping», и на «ping <аргументы>» — иначе в инлайне
+    # команда нового стиля вообще не отвечает.
+    if query == "ping" or query.startswith("ping "):
         start = time.perf_counter()
         # Эмулируем задержку
         ms = (time.perf_counter() - start) * 1000

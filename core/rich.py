@@ -89,8 +89,11 @@ async def send_rich(client, peer_id, html_text, reply_to=None,
 
     # 4. Находим наш rich-результат
     result = None
+    log.info("[rich] результатов пришло: %d", len(getattr(results, "results", None) or []))
     for res in getattr(results, "results", None) or []:
         sm = getattr(res, "send_message", None)
+        log.info("[rich]   результат: id=%s type=%s send_message=%s",
+                 getattr(res, "id", "?"), getattr(res, "type", "?"), type(sm).__name__)
         if isinstance(sm, BotInlineMessageRichMessage):
             result = res
             break
