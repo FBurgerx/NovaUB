@@ -374,8 +374,11 @@ async def _send_rich_help(client, message, module_cmds, pref):
             "".join(lines),
         )
 
+    total_mods = len(sys_mods) + len(ext_mods)
+
     html_text = (
         f"<h1>NovaUB Modules</h1>"
+        f"<h3>{total_mods} модулей доступно</h3>"
         + _build_section("Встроенные", sys_mods)
         + _build_section("Пользовательские", ext_mods)
     )
