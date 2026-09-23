@@ -317,7 +317,7 @@ class InlineBot:
                         send_message=InputBotInlineMessageRichMessage(
                             rich_message=InputRichMessage(blocks=blocks),
                         ),
-                    )], cache_time=0)
+                    )], cache_time=300)
                     self.kernel.logger.info(
                         "[rich] rich-результат отдан: %d байт / %d блоков",
                         len(html_text), len(blocks))
