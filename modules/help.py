@@ -362,27 +362,44 @@ async def _send_rich_help(client, message, module_cmds, pref):
     def _build_section(title, mods_dict):
         if not mods_dict:
             return ""
-        rows = []
+        blocks = []
         for mod, cmds in sorted(mods_dict.items()):
             mod_obj = _find_module(mod)
             meta = read_module_meta(mod_obj, mod, cmds) if mod_obj else {}
             display = (meta.get("name") if meta else None) or mod
-            cmds_str = " | ".join(f"{pref}{c}" for c in sorted(cmds))
-            rows.append([display, cmds_str])
+            mod_desc = _first_line(meta.get("description")) if meta else ""
+            cmd_descs = _command_descriptions(client, mod, cmds) if mod_obj else {}
+            cmd_blocks = []
+            for c in sorted(cmds):
+                cdesc = cmd_descs.get(c.lower()) or "нет описания"
+                alias_html = ""
+                info = client.commands.get(c, {})
+                if isinstance(info, dict):
+                    aliases = [a for a in info.get("aliases", []) if a != c]
+                    if aliases:
+                        alias_html = (
+                            "\n<p><i>синонимы:</i> "
+                            + ", ".join(f"<code>{_escape(pref + a)}</code>" for a in aliases)
+                            + "</p>"
+                        )
+                cmd_blocks.append(
+                    details(f"{pref}{c}", f"<p>{_escape(cdesc)}</p>{alias_html}")
+                )
+            inner = "".join(cmd_blocks)
+            if mod_desc:
+                inner = f"<blockquote><p>{_escape(mod_desc)}</p></blockquote>" + inner
+            blocks.append(
+                details(_escape(display), inner)
+            )
         return (
             f"<h3>{_escape(title)}</h3>"
-            + table(["Модуль", "Команды"], rows)
+            + "".join(blocks)
         )
 
     html_text = (
         f"<h1>NovaUB Modules</h1>"
         + _build_section("Системные", sys_mods)
         + _build_section("Внешние", ext_mods)
-        + details(
-            "Подробнее о модуле",
-            f"<p>Используй <code>{pref}help &lt;имя&gt;</code> "
-            f"для карточки модуля</p>",
-        )
     )
 
     try:
