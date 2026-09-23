@@ -73,32 +73,47 @@ async def send_rich(client, peer_id, html_text, reply_to=None,
     cache = _get_cache(kernel)
     cache[marker] = html_text
 
-    # 3. Inline-запрос
+    # 3. Inline-запрос. Бот может не успеть ответить за один проход
+    #    (импорт TL-классов + сборка занимают ~200мс), и Telegram
+    #    вернёт пустой список. Повторяем запрос: после первого
+    #    промаха ответ бота уже лежит в кэше Telegram и приходит сразу.
     query_text = f"rich_{marker}"
-    try:
-        results = await asyncio.wait_for(client(GetInlineBotResultsRequest(
-            bot=await client.get_input_entity(bot_username),
-            peer=await client.get_input_entity(peer_id),
-            query=query_text,
-            offset="",
-        )), timeout=timeout)
-    except asyncio.TimeoutError:
-        log.error("inline-бот не ответил за %ss — rich не отправлен", timeout)
-        cache.pop(marker, None)
-        return None
-
-    # 4. Находим наш rich-результат
+    results = None
     result = None
-    log.info("[rich] результатов пришло: %d", len(getattr(results, "results", None) or []))
-    for res in getattr(results, "results", None) or []:
-        sm = getattr(res, "send_message", None)
-        log.info("[rich]   результат: id=%s type=%s send_message=%s",
-                 getattr(res, "id", "?"), getattr(res, "type", "?"), type(sm).__name__)
-        if isinstance(sm, BotInlineMessageRichMessage):
-            result = res
+    for attempt in range(4):
+        try:
+            results = await asyncio.wait_for(client(GetInlineBotResultsRequest(
+                bot=await client.get_input_entity(bot_username),
+                peer=await client.get_input_entity(peer_id),
+                query=query_text,
+                offset="",
+            )), timeout=timeout)
+        except asyncio.TimeoutError:
+            log.error("inline-бот не ответил за %ss — rich не отправлен", timeout)
+            cache.pop(marker, None)
+            return None
+
+        # 4. Находим наш rich-результат
+        for res in getattr(results, "results", None) or []:
+            sm = getattr(res, "send_message", None)
+            if isinstance(sm, BotInlineMessageRichMessage):
+                result = res
+                break
+        if result is not None:
+            if attempt:
+                log.info("[rich] результат получен с попытки %d", attempt + 1)
             break
+
+        if attempt == 0:
+            # Бот ещё не ответил — даём ему время и повторяем:
+            # ответ уже мог прийти в Telegram и будет отдан из кэша.
+            log.info("[rich] бот не успел ответить, повторяю запрос...")
+            await asyncio.sleep(0.4)
+        else:
+            await asyncio.sleep(0.7)
+
     if result is None:
-        log.error("inline-бот не вернул rich-результат (видимо, бот не запущен)")
+        log.error("inline-бот не вернул rich-результат после 4 попыток")
         cache.pop(marker, None)
         return None
 

@@ -5,6 +5,10 @@ import os
 import re
 import sys
 from telethon import TelegramClient, events, Button
+from telethon.tl.types import (
+    InputBotInlineMessageRichMessage, InputRichMessageHTML,
+    BotInlineResult, BotInlineMessageRichMessage,
+)
 
 class Colors:
     RESET = "\033[0m"
@@ -303,10 +307,6 @@ class InlineBot:
                 if html_text is None:
                     await event.answer([])
                     return
-                from telethon.tl.types import (
-                    InputBotInlineMessageRichMessage, InputRichMessageHTML,
-                    BotInlineResult,
-                )
                 try:
                     await event.answer([BotInlineResult(
                         id=f"rich_{marker}",
