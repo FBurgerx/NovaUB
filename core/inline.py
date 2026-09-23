@@ -296,6 +296,10 @@ class InlineBot:
                 marker = query_text[len("rich_"):]
                 cache = getattr(self.kernel, "_rich_cache", {})
                 html_text = cache.get(marker)
+                self.kernel.logger.info(
+                    "[rich] inline-запрос: marker=%s cache_size=%d found=%s",
+                    marker, len(cache), html_text is not None,
+                )
                 if html_text is None:
                     await event.answer([])
                     return

@@ -67,17 +67,36 @@ class Kernel:
             self.logger.error(f"Ошибка сохранения конфигурации: {e}")
 
     def get_api_credentials(self):
-        api_id = self.config.get("api_id")
-        api_hash = self.config.get("api_hash")
+        """API ID и API HASH из единого конфига.
+
+        В едином конфиге credentials лежат в секции «api»:
+            "api": {"api_id": 21732476, "api_hash": "…"}
+        Плоские api_id/api_hash — легаси, оставлены как запасной путь,
+        чтобы не сломать старые конфиги.
+        """
+        # 1. Единый конфиг: api.api_id / api.api_hash
+        api_section = self.config.get("api") or {}
+        api_id = api_section.get("api_id")
+        api_hash = api_section.get("api_hash")
+
+        # 2. Легаси: плоские api_id/api_hash в корне конфига
+        if not api_id:
+            api_id = self.config.get("api_id")
+        if not api_hash:
+            api_hash = self.config.get("api_hash")
+
         if not api_id or not api_hash:
             print(f"{Colors.YELLOW}API ID и/или API HASH не найдены в конфигурации.{Colors.RESET}")
             api_id = input("Введите API ID: ")
             api_hash = input("Введите API HASH: ")
-            self.config["api_id"] = int(api_id)
-            self.config["api_hash"] = api_hash
+            self.config.setdefault("api", {})
+            self.config["api"]["api_id"] = int(api_id)
+            self.config["api"]["api_hash"] = api_hash
             self.save_config()
             print(f"{Colors.GREEN}Учетные данные API сохранены в {self.CONFIG_FILE}{Colors.RESET}")
-        return int(self.config["api_id"]), self.config["api_hash"]
+            return int(api_id), api_hash
+
+        return int(api_id), api_hash
 
     async def start_client(self, session_name: str):
         api_id, api_hash = self.get_api_credentials()
