@@ -1,7 +1,7 @@
 __meta__ = {
     "name": "Hello",
     "version": "1.0.0",
-    "author": "Your Name",
+    "author":      "FBurgerx",
     "description": "Приветственный модуль",
     "commands": ["hello", "greet"]
 }

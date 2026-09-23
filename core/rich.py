@@ -2,14 +2,15 @@
 
 MTProto не умеет отправлять PageBlock-блоки (таблицы, <details>, списки,
 настоящие заголовки) от имени пользователя — только MessageEntity. Зато
-Telegram Bot API умеет: sendRichMessage принимает HTML с <table>, <details>,
-<ul>, <h1>-<h6> и рендерит их настоящими PageBlock-ами.
+их можно отправить через инлайн-бота: юзербот делает inline-запрос своему
+боту, тот отвечает InputBotInlineMessageRichMessage, и юзербот отправляет
+результат в чат. Сообщение приходит от имени пользователя.
 
-Путь сообщения: модуль NovaUB → send_rich() → Bot API sendRichMessage
-через инлайн-бота (komaru_vibesbot) → Telegram парсит HTML в RichMessage.
+Путь сообщения: модуль → send_rich() → inline-запрос к боту →
+бот отдаёт rich-результат из кэша → SendInlineBotResultRequest → чат.
 
 ┌─ Использование ──────────────────────────────────────────────────────┐
-│ from core.rich import send_rich                                      │
+│ from core.rich import send_rich, table, details, list_items          │
 │                                                                     │
 │ await send_rich(client, peer_id, '''                                │
 │     <h1>NovaUB</h1>                                                 │
@@ -23,136 +24,151 @@ Telegram Bot API умеет: sendRichMessage принимает HTML с <table>,
 │ ''', reply_to=message.id)                                           │
 └──────────────────────────────────────────────────────────────────────┘
 
-Поддерживаемые теги (Bot API 10.2):
+Поддерживаемые теги (Bot API 10.2 / InputRichMessageHTML):
   <h1>-<h6>, <p>, <b>, <i>, <u>, <s>, <code>, <pre>, <a>,
   <blockquote>, <table> (с <tr>/<th>/<td>), <ul>/<ol> (с <li>),
-  <details> (с <summary>), <tg-emoji emoji-id="…">, <tg-spoiler>,
-  <mark>, <br>, <hr>
+  <details> (с <summary>), <mark>, <br>, <hr>
 """
 
+import asyncio
 import html as _html
 import logging
 
 log = logging.getLogger(__name__)
 
-# ── Поддерживаемые теги для подсветки в строке документации ──────────────
-SUPPORTED_TAGS = (
-    "h1", "h2", "h3", "h4", "h5", "h6", "p", "b", "strong", "i", "em",
-    "u", "ins", "s", "del", "code", "pre", "a", "blockquote", "table",
-    "tr", "th", "td", "thead", "tbody", "ul", "ol", "li", "details",
-    "summary", "tg-emoji", "tg-spoiler", "mark", "br", "hr", "span", "div",
-)
-
-
-def _get_token(client):
-    """Достаёт токен инлайн-бота из kernel/config."""
-    kernel = getattr(client, "kernel", None)
-    if kernel is not None:
-        token = getattr(kernel, "config", {}).get("inline_bot_token")
-        if token:
-            return token
-        bot = getattr(kernel, "inline_bot", None)
-        if bot is not None:
-            return getattr(bot, "token", None) or None
-    return None
-
-
-def _get_api_root(client):
-    """api_id/api_hash для Bot API-вызовов (нужны только если токен от MCUB)."""
-    kernel = getattr(client, "kernel", None)
-    if kernel is not None:
-        api = getattr(kernel, "config", {}).get("api", {})
-        return api.get("api_id"), api.get("api_hash")
-    return None, None
-
 
 async def send_rich(client, peer_id, html_text, reply_to=None,
-                    disable_notification=False, bot_token=None):
-    """Отправляет rich-сообщение (с таблицами, <details>, списками).
+                    hide_via=True, bot_username=None, timeout=30):
+    """Отправляет rich-сообщение через инлайн-бота.
 
-    client     — TelegramClient юзербота
-    peer_id    — куда отправить (int, username, Peer)
-    html_text  — HTML с rich-тегами
-    reply_to   — на какое сообщение ответить (id или Message)
-    bot_token  — токен бота (по умолчанию берётся из kernel.inline_bot)
+    client       — TelegramClient юзербота
+    peer_id      — куда отправить
+    html_text    — HTML с rich-тегами
+    reply_to     — на какое сообщение ответить (id или Message)
+    hide_via     — скрыть подпись «via @bot»
+    bot_username — username инлайн-бота (по умолчанию из kernel.inline_bot)
 
-    Возвращает словарь ответа Bot API (с message_id) или None при ошибке.
+    Возвращает отправленное сообщение (Message) или None при ошибке.
     """
-    import aiohttp
-    import json
+    from telethon.tl.functions.messages import (
+        GetInlineBotResultsRequest, SendInlineBotResultRequest,
+    )
+    from telethon.tl.types import (
+        InputBotInlineMessageRichMessage, InputRichMessageHTML,
+        BotInlineResult, BotInlineMessageRichMessage,
+    )
 
-    if bot_token is None:
-        bot_token = _get_token(client)
-    if not bot_token:
-        raise RuntimeError("токен инлайн-бота не найден — rich недоступен")
+    # 1. Находим бота
+    kernel = getattr(client, "kernel", None)
+    if bot_username is None and kernel is not None:
+        inline = getattr(kernel, "inline_bot", None)
+        if inline is not None:
+            bot_username = getattr(inline, "username", None)
+    if not bot_username:
+        raise RuntimeError("inline-бот не настроен — rich недоступен")
+    bot_username = bot_username.lstrip("@")
 
-    # peer_id → chat_id для Bot API
-    chat_id = await _resolve_chat_id(client, peer_id)
+    # 2. Кэшируем HTML для бота: бот отдаст его по маркеру
+    marker = _render_marker(html_text)
+    cache = _get_cache(kernel)
+    cache[marker] = html_text
 
-    payload = {
-        "chat_id": chat_id,
-        "rich_message": json.dumps({"html": html_text}, ensure_ascii=False),
-    }
+    # 3. Inline-запрос
+    query_text = f"rich_{marker}"
+    try:
+        results = await asyncio.wait_for(client(GetInlineBotResultsRequest(
+            bot=await client.get_input_entity(bot_username),
+            peer=await client.get_input_entity(peer_id),
+            query=query_text,
+            offset="",
+        )), timeout=timeout)
+    except asyncio.TimeoutError:
+        log.error("inline-бот не ответил за %ss — rich не отправлен", timeout)
+        cache.pop(marker, None)
+        return None
+
+    # 4. Находим наш rich-результат
+    result = None
+    for res in getattr(results, "results", None) or []:
+        sm = getattr(res, "send_message", None)
+        if isinstance(sm, BotInlineMessageRichMessage):
+            result = res
+            break
+    if result is None:
+        log.error("inline-бот не вернул rich-результат (видимо, бот не запущен)")
+        cache.pop(marker, None)
+        return None
+
+    # 5. Отправляем результат от имени пользователя
+    reply_arg = None
     if reply_to is not None:
-        payload["reply_to_message_id"] = (
-            reply_to.id if hasattr(reply_to, "id") else int(reply_to)
-        )
-    if disable_notification:
-        payload["disable_notification"] = True
+        reply_arg = reply_to.id if hasattr(reply_to, "id") else int(reply_to)
+    try:
+        updates = await asyncio.wait_for(client(SendInlineBotResultRequest(
+            peer=await client.get_input_entity(peer_id),
+            query_id=results.query_id,
+            id=result.id,
+            reply_to=reply_arg,
+            hide_via=hide_via,
+        )), timeout=timeout)
+    finally:
+        cache.pop(marker, None)
 
-    url = f"https://api.telegram.org/bot{bot_token}/sendRichMessage"
-    timeout = aiohttp.ClientTimeout(total=60)
-
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.post(url, json=payload) as resp:
-            data = await resp.json()
-            if not data.get("ok"):
-                desc = data.get("description", "неизвестная ошибка")
-                log.error("sendRichMessage failed: %s", desc)
-                return None
-            return data.get("result", {})
+    # 6. Достаём Message из Updates
+    return _extract_message(client, updates)
 
 
-async def _resolve_chat_id(client, peer_id):
-    """Преобразует peer в chat_id, понятный Bot API."""
-    # Уже число — отдаём как есть (бот видит этот чат)
-    if isinstance(peer_id, int):
-        return peer_id
-
-    # Строка-username
-    if isinstance(peer_id, str):
-        if peer_id.startswith("@"):
-            entity = await client.get_entity(peer_id)
-            return entity.id
+def _get_cache(kernel):
+    """Возвращает словарь кэша rich-сообщений (создаёт при необходимости)."""
+    if kernel is None:
+        return {}
+    cache = getattr(kernel, "_rich_cache", None)
+    if cache is None:
+        cache = {}
         try:
-            return int(peer_id)
-        except ValueError:
-            entity = await client.get_entity(peer_id)
-            return entity.id
+            kernel._rich_cache = cache
+        except Exception:
+            pass
+    return cache
 
-    # Peer-объект Telethon
-    if hasattr(peer_id, "chat_id"):
-        return peer_id.chat_id
-    if hasattr(peer_id, "user_id"):
-        return peer_id.user_id
 
-    # Message → его чат
-    if hasattr(peer_id, "peer_id"):
-        return await _resolve_chat_id(client, peer_id.peer_id)
+def _render_marker(html_text):
+    """Уникальный идентификатор rich-сообщения — чтобы найти его в выдаче."""
+    import hashlib
+    import time
+    payload = f"{time.time()}|{len(html_text)}|{html_text[:32]}"
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
 
-    entity = await client.get_entity(peer_id)
-    return entity.id
 
+def _extract_message(client, updates):
+    """Достаёт Message из Updates, которые вернул SendInlineBotResultRequest."""
+    from telethon.tl.custom import Message
+    msgs = []
+    for upd in getattr(updates, "updates", None) or []:
+        for attr in ("message", "messages"):
+            val = getattr(upd, attr, None)
+            if not val:
+                continue
+            items = val if isinstance(val, list) else [val]
+            for item in items:
+                # голый TL Message (нет .to_dict у клиента) — оборачиваем
+                if isinstance(item, Message):
+                    msgs.append(item)
+                else:
+                    msgs.append(Message(item, client, None, None))
+    if not msgs:
+        return None
+    return msgs[-1]
 
 # ── Утилиты для построения HTML ───────────────────────────────────────────
 
 
-def table(headers, rows, title=None, striped=True):
+def table(headers, rows, title=None):
     """Собирает HTML-таблицу.
 
     headers  — список строк (шапка) или None
     rows     — список списков ячеек
-    title    — заголовок таблицы (Paragraph перед ней)
+    title    — параграф-заголовок перед таблицей
     """
     parts = []
     if title:
@@ -184,11 +200,6 @@ def list_items(items, ordered=False):
     tag = "ol" if ordered else "ul"
     body = "".join(f"<li>{item}</li>" for item in items)
     return f"<{tag}>{body}</{tag}>"
-
-
-def emoji(emoji_id, fallback="✨"):
-    """Премиум-эмодзи по ID (в rich-контексте работает обычный тег)."""
-    return f'<tg-emoji emoji-id="{int(emoji_id)}">{fallback}</tg-emoji>'
 
 
 def _escape(value):

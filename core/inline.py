@@ -289,6 +289,30 @@ class InlineBot:
         async def universal_inline_handler(event):
             query_text = event.text.strip()
 
+            # ── Rich-сообщения: юзербот просит отправить HTML с таблицами,
+            # <details>, списками и настоящими заголовками. HTML лежит в
+            # kernel._rich_cache под маркером из запроса.
+            if query_text.startswith("rich_"):
+                marker = query_text[len("rich_"):]
+                cache = getattr(self.kernel, "_rich_cache", {})
+                html_text = cache.get(marker)
+                if html_text is None:
+                    await event.answer([])
+                    return
+                from telethon.tl.types import (
+                    InputBotInlineMessageRichMessage, InputRichMessageHTML,
+                    BotInlineResult,
+                )
+                await event.answer([BotInlineResult(
+                    id=f"rich_{marker}",
+                    type="article",
+                    title="Rich",
+                    send_message=InputBotInlineMessageRichMessage(
+                        rich_message=InputRichMessageHTML(html=html_text),
+                    ),
+                )], cache_time=0)
+                return
+
             if query_text.startswith("trigger_"):
                 trigger_name = query_text[len("trigger_"):]
                 handler = self.kernel.inline_trigger_handlers.get(trigger_name)

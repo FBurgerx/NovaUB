@@ -5,7 +5,7 @@ import sys
 from telethon.tl.custom import Message
 
 from core.meta_lib import extract_command_descriptions, read_module_meta
-from core.rich import send_rich, table, details, list_items, emoji
+from core.rich import send_rich, table, details, list_items
 
 LIST_ALIASES = {"list", "all", "ls"}
 
@@ -154,6 +154,66 @@ def _render_module_detail(client, module_name, module, meta, pref):
     )
 
 
+def _render_rich_module_detail(client, module_name, module, meta, pref):
+    """Rich-карточка модуля для отправки через инлайн-бота.
+
+    В отличие от текстовой версии, использует настоящие rich-блоки:
+    свёрнутые <details> для команд и метаинформации.
+    """
+    display = meta.get("name") or module_name
+    author = meta.get("author") or "Не указан"
+    version = meta.get("version") or ""
+    description = _first_line(meta.get("description")) or "Нет описания"
+    requires = meta.get("requires") or []
+    commands = meta.get("commands") or []
+    cmd_descs = _command_descriptions(client, module_name, commands) if module else {}
+
+    # ── Команды: каждая в своём свёрнутом блоке ──
+    cmd_blocks = []
+    for cmd in commands:
+        info = client.commands.get(cmd, {})
+        if isinstance(info, dict) and info.get("alias_of"):
+            continue
+        desc = cmd_descs.get(cmd.lower()) or "нет описания"
+        aliases = []
+        if isinstance(info, dict):
+            aliases = [a for a in info.get("aliases", []) if a != cmd]
+        alias_html = ""
+        if aliases:
+            alias_html = (
+                "\n<p><i>синонимы:</i> "
+                + ", ".join(f"<code>{_escape(pref + a)}</code>" for a in aliases)
+                + "</p>"
+            )
+        cmd_blocks.append(
+            details(
+                f"{pref}{cmd}",
+                f"<p>{_escape(desc)}</p>{alias_html}",
+            )
+        )
+    commands_html = "\n".join(cmd_blocks) if cmd_blocks else "<p><i>Нет команд</i></p>"
+
+    # ── Информация о модуле ──
+    info_rows = [
+        ["Разработчик", author],
+        ["Версия", version or "—"],
+        ["Модуль", module_name],
+    ]
+    if requires:
+        info_rows.append(["Зависимости", ", ".join(requires)])
+    info_html = table(["Параметр", "Значение"], info_rows)
+
+    html_text = (
+        f"<h2>{_escape(display)}</h2>"
+        f"<blockquote><p>{_escape(description)}</p></blockquote>"
+        f"<h3>Команды</h3>"
+        f"{commands_html}"
+        f"<h3>Информация</h3>"
+        f"{info_html}"
+    )
+    return html_text
+
+
 # ── РЕНДЕР: общий список (.help) ──────────────────────────────────────────
 
 
@@ -250,6 +310,17 @@ async def help_cmd(client, message, args):
             and not info.get("alias_of")
         ]
         meta = read_module_meta(module, module_name, module_commands)
+
+        # Rich-карточка: если бот доступен — отправляем настоящее rich-сообщение
+        # (свёрнутые блоки команд, таблица с информацией о модуле)
+        if rich_mode:
+            html_text = _render_rich_module_detail(
+                client, module_name, module, meta, pref
+            )
+            ok = await _try_send_rich(client, message, html_text)
+            if ok:
+                return
+
         detail = _render_module_detail(client, module_name, module, meta, pref)
         return await message.edit(detail, parse_mode='html')
 
@@ -314,6 +385,31 @@ async def _send_rich_help(client, message, module_cmds, pref):
         )
     )
 
+    try:
+        reply_to = getattr(message, "reply_to_msg_id", None) or None
+        result = await send_rich(
+            client,
+            message.peer_id,
+            html_text,
+            reply_to=reply_to,
+        )
+        if result is not None:
+            try:
+                await message.delete()
+            except Exception:
+                pass
+            return True
+    except Exception:
+        pass
+    return False
+
+
+async def _try_send_rich(client, message, html_text):
+    """Отправляет rich-сообщение, аккуратно удаляя исходное сообщение.
+
+    Возвращает True при успехе, False если бот недоступен
+    (тогда help падает на обычный текстовый режим).
+    """
     try:
         reply_to = getattr(message, "reply_to_msg_id", None) or None
         result = await send_rich(
